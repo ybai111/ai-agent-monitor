@@ -11,12 +11,12 @@ Detects **Claude CLI, Cursor, Antigravity, Windsurf, Trae, Aider, Copilot, Codex
 │ 7 instances (3 Claude + 2 Cursor + 1 Codex + 1 GK MCP)        │
 ├─ Active Instances ─────────────────────────────────────────────┤
 │   USER        TOOL    TYPE  MODEL       PROJECT        MEM     │
-│ ● baiyuhu     Cursor  扩展  opus        work_detection 328M    │
-│ ● baiyuhu     Cursor  服务  [codex]     baiyuhu         47M    │
-│ ● baiyuhu     Claude  API   -           claude_web_mgr 370M    │
-│ ● sunyifan    Claude  交互  -           my-project     481M    │
-│ ● zhouyinhong Cursor  扩展  opus        nature-chat    317M    │
-│ ● luoyudong   AG      服务  -           -                -     │
+│ ● alice       Cursor  扩展  opus        my-webapp/     328M    │
+│ ● alice       Cursor  服务  [codex]     my-webapp/      47M    │
+│ ● alice       Claude  API   -           api-server/    370M    │
+│ ● bob         Claude  交互  -           ml-pipeline/   481M    │
+│ ● charlie     Cursor  扩展  opus        chat-app/      317M    │
+│ ● dave        AG      服务  -           -                -     │
 ├─ Task History ─────────────────────────────────────────────────┤
 │ ✓ completed  给AI装技能包...           3m20s  03-17 07:08     │
 │ ✗ failed     weekly --publish          0m5s   03-17 06:30     │
