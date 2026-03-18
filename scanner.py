@@ -1,129 +1,251 @@
 """
-Claude 实例扫描器：从进程列表和本地文件中提取所有 Claude 实例信息
+AI Coding Agent 扫描器：检测所有活跃的 AI 编程工具实例
+支持：Claude CLI, Cursor, Antigravity, Windsurf, Trae, Aider, Copilot, Codex 等
 """
 
 import json
 import os
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
 @dataclass
-class ClaudeInstance:
-    """一个 Claude 实例的完整信息"""
+class AgentInstance:
+    """一个 AI 编程工具实例"""
     pid: int
     user: str
-    type: str  # "cursor" | "cli-interactive" | "cli-oneshot" | "cli-api" | "cli-login"
+    tool: str       # "claude-cli" | "cursor" | "antigravity" | "windsurf" | "trae" | "aider" | "copilot" | "codex" | ...
+    sub_type: str    # "interactive" | "oneshot" | "api" | "login" | "server" | "extension" | "mcp"
     model: str = ""
     cwd: str = ""
-    prompt: str = ""  # one-shot 的 prompt 内容
+    prompt: str = ""
     session_id: str = ""
     permission_mode: str = ""
+    extension: str = ""  # IDE 扩展名（如 "anthropic.claude-code-2.1.77"）
     cpu_percent: float = 0.0
     mem_mb: int = 0
     started_at: str = ""
     uptime: str = ""
     version: str = ""
-    status: str = "running"  # "running" | "completed" | "failed" | "cancelled"
-    # 从 web manager DB 补充的任务信息
+    # 外部任务 DB 补充
     task_id: str = ""
-    task_status: str = ""  # web manager 任务状态
-    task_output_preview: str = ""  # 输出前 100 字符
+    task_status: str = ""
+    task_output_preview: str = ""
 
     @property
     def project_name(self) -> str:
-        """从 cwd 提取项目名"""
         if not self.cwd:
             return "?"
         return Path(self.cwd).name
 
     @property
+    def tool_label(self) -> str:
+        """显示名称"""
+        labels = {
+            "claude-cli": "Claude",
+            "cursor": "Cursor",
+            "antigravity": "AG",
+            "windsurf": "Windsurf",
+            "trae": "Trae",
+            "aider": "Aider",
+            "copilot": "Copilot",
+            "codex": "Codex",
+            "gk-mcp": "GK MCP",
+            "unknown-ide": "IDE",
+        }
+        return labels.get(self.tool, self.tool)
+
+    @property
     def type_label(self) -> str:
         labels = {
-            "cursor": "Cursor",
-            "cli-interactive": "CLI",
-            "cli-oneshot": "CLI →",
-            "cli-api": "API",
-            "cli-login": "Login",
+            "interactive": "交互",
+            "oneshot": "单次",
+            "api": "API",
+            "login": "登录",
+            "server": "服务",
+            "extension": "扩展",
+            "mcp": "MCP",
         }
-        return labels.get(self.type, self.type)
+        return labels.get(self.sub_type, self.sub_type)
 
     @property
     def prompt_short(self) -> str:
-        """截断的 prompt 摘要"""
         if not self.prompt:
             return ""
-        # 去掉首尾引号
         p = self.prompt.strip("'\"")
         return p[:60] + "..." if len(p) > 60 else p
 
 
-def scan_instances() -> list[ClaudeInstance]:
-    """扫描当前机器上所有 Claude 实例"""
+# ============= 工具检测规则 =============
+
+# IDE server 目录特征 → 工具名
+_IDE_SIGNATURES = {
+    ".cursor-server": "cursor",
+    ".antigravity-server": "antigravity",
+    ".windsurf-server": "windsurf",
+    ".trae-server": "trae",
+    ".vscode-server": "vscode",
+}
+
+# 扩展名前缀 → AI 工具
+_EXTENSION_SIGNATURES = {
+    "anthropic.claude-code": "claude-code",
+    "openai.chatgpt": "codex",
+    "github.copilot": "copilot",
+    "saoudrizwan.claude-dev": "cline",
+    "rooveterinaryinc.roo-cline": "roo-code",
+    "continue.continue": "continue",
+    "codeium.codeium": "codeium",
+    "supermaven.supermaven": "supermaven",
+    "tabbyml.vscode-tabby": "tabby",
+}
+
+
+def scan_instances() -> list[AgentInstance]:
+    """扫描所有 AI 编程工具实例"""
     instances = []
 
-    # 遍历 /proc 找所有 claude 进程
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
             continue
         pid = int(entry)
         try:
-            # 读命令行
-            cmdline_path = f"/proc/{pid}/cmdline"
-            with open(cmdline_path, "rb") as f:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
                 cmdline_raw = f.read()
-            cmdline_parts = cmdline_raw.decode("utf-8", errors="replace").split("\x00")
-            cmdline = " ".join(cmdline_parts)
+            parts = cmdline_raw.decode("utf-8", errors="replace").split("\x00")
+            cmdline = " ".join(parts)
 
-            # 只关心 claude 相关进程
-            if not _is_claude_process(cmdline_parts):
+            result = _classify_process(pid, cmdline, parts)
+            if not result:
                 continue
 
-            # 读取进程信息
             stat = _read_proc_stat(pid)
-            instance = ClaudeInstance(
+            inst = AgentInstance(
                 pid=pid,
                 user=_get_user(pid),
-                type=_detect_type(cmdline, cmdline_parts),
+                tool=result["tool"],
+                sub_type=result["sub_type"],
+                model=result.get("model", ""),
+                prompt=result.get("prompt", ""),
+                session_id=result.get("session_id", ""),
+                permission_mode=result.get("permission_mode", ""),
+                extension=result.get("extension", ""),
+                version=result.get("version", ""),
                 cpu_percent=stat.get("cpu", 0.0),
                 mem_mb=stat.get("mem_mb", 0),
                 started_at=stat.get("start_time", ""),
                 uptime=stat.get("uptime", ""),
             )
 
-            # 工作目录
             try:
-                instance.cwd = os.readlink(f"/proc/{pid}/cwd")
+                inst.cwd = os.readlink(f"/proc/{pid}/cwd")
             except (PermissionError, FileNotFoundError):
                 pass
 
-            # 从命令行提取参数
-            _extract_args(instance, cmdline, cmdline_parts)
-
-            instances.append(instance)
+            instances.append(inst)
 
         except (PermissionError, FileNotFoundError, ProcessLookupError):
             continue
 
-    # 补充 web manager 任务信息
-    _enrich_from_web_manager(instances)
-
-    # 按用户 + 类型排序
-    instances.sort(key=lambda i: (i.user, i.type, -i.pid))
+    _enrich_from_task_db(instances)
+    instances.sort(key=lambda i: (i.user, i.tool, -i.pid))
     return instances
 
 
-def _enrich_from_web_manager(instances: list[ClaudeInstance]):
-    """从外部任务 DB 读取任务状态，补充到对应实例。
+def _classify_process(pid: int, cmdline: str, parts: list[str]) -> dict | None:
+    """判断进程类型，返回分类信息或 None"""
 
-    支持环境变量 CLAUDE_MONITOR_TASK_DB 指定 SQLite 数据库路径。
-    数据库需包含 tasks 表（字段: id, prompt, status, output, created_at, started_at, finished_at）。
-    """
+    # --- 1. Claude CLI ---
+    for p in parts:
+        if not p:
+            continue
+        basename = os.path.basename(p)
+        if basename == "claude":
+            # 排除 IDE 内嵌的 claude（那些走扩展检测）
+            if "cursor-server" in cmdline or "antigravity-server" in cmdline:
+                break  # 交给 IDE 扩展检测
+            result = {"tool": "claude-cli"}
+            if "login" in parts:
+                result["sub_type"] = "login"
+            elif any(p == "-p" for p in parts):
+                result["sub_type"] = "api" if ("--output-format" in cmdline) else "oneshot"
+            else:
+                result["sub_type"] = "interactive"
+            _extract_claude_args(result, parts, cmdline)
+            return result
+
+    # --- 2. Aider CLI ---
+    for p in parts:
+        if os.path.basename(p or "") == "aider":
+            result = {"tool": "aider", "sub_type": "interactive"}
+            for i, arg in enumerate(parts):
+                if arg == "--model" and i + 1 < len(parts):
+                    result["model"] = parts[i + 1]
+            return result
+
+    # --- 3. IDE 内嵌 AI 扩展（Claude Code, Codex, Copilot 等）---
+    for sig, ide_name in _IDE_SIGNATURES.items():
+        if sig not in cmdline:
+            continue
+
+        # 检查是否为 AI 扩展进程
+        for ext_prefix, ext_tool in _EXTENSION_SIGNATURES.items():
+            if ext_prefix in cmdline:
+                result = {
+                    "tool": ide_name,
+                    "sub_type": "extension",
+                    "extension": ext_tool,
+                }
+                # Claude Code 扩展有额外信息
+                if ext_tool == "claude-code":
+                    result["sub_type"] = "extension"
+                    _extract_claude_args(result, parts, cmdline)
+                # Codex server
+                if ext_tool == "codex" and "app-server" in cmdline:
+                    result["sub_type"] = "server"
+                # 版本号
+                ver_match = re.search(rf"{re.escape(ext_prefix)}-([0-9.]+)", cmdline)
+                if ver_match:
+                    result["version"] = ver_match.group(1)
+                return result
+
+        # GitKraken MCP
+        if "gk" in cmdline and "mcp" in cmdline:
+            host = ""
+            for i, p in enumerate(parts):
+                if p.startswith("--host="):
+                    host = p.split("=", 1)[1]
+            return {"tool": "gk-mcp", "sub_type": "mcp", "model": host}
+
+        # IDE server 主进程（只取 bootstrap-fork，跳过 fileWatcher 等辅助进程）
+        if "bootstrap-fork" in cmdline and "--type=" not in cmdline:
+            return {"tool": ide_name, "sub_type": "server"}
+
+    return None
+
+
+def _extract_claude_args(result: dict, parts: list[str], cmdline: str):
+    """从 Claude 命令行提取参数"""
+    for i, p in enumerate(parts):
+        if p == "--model" and i + 1 < len(parts):
+            result["model"] = parts[i + 1]
+        elif p == "--permission-mode" and i + 1 < len(parts):
+            result["permission_mode"] = parts[i + 1]
+        elif p == "--resume" and i + 1 < len(parts):
+            result["session_id"] = parts[i + 1][:12] + "..."
+        elif p == "-p" and i + 1 < len(parts):
+            result["prompt"] = parts[i + 1]
+    ver_match = re.search(r"claude-code-(\d+\.\d+\.\d+)", cmdline)
+    if ver_match:
+        result["version"] = ver_match.group(1)
+
+
+def _enrich_from_task_db(instances: list[AgentInstance]):
+    """从外部任务 DB 补充状态信息"""
     db_path = os.environ.get("CLAUDE_MONITOR_TASK_DB", "")
     if not db_path:
-        # 尝试默认位置（同级 claude_web_manager 项目）
         default = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "claude_web_manager", "data", "tasks.db",
@@ -145,10 +267,8 @@ def _enrich_from_web_manager(instances: list[ClaudeInstance]):
         return
 
     tasks = [dict(r) for r in rows]
-
-    # 对每个 cli-api 实例，通过 prompt 匹配任务
     for inst in instances:
-        if inst.type != "cli-api" or not inst.prompt:
+        if inst.sub_type != "api" or not inst.prompt:
             continue
         prompt_head = inst.prompt[:50]
         for task in tasks:
@@ -161,7 +281,7 @@ def _enrich_from_web_manager(instances: list[ClaudeInstance]):
 
 
 def get_recent_tasks(limit: int = 20) -> list[dict]:
-    """从外部任务 DB 读取最近任务（含已完成的）"""
+    """从外部任务 DB 读取最近任务"""
     db_path = os.environ.get("CLAUDE_MONITOR_TASK_DB", "")
     if not db_path:
         default = os.path.join(
@@ -186,149 +306,15 @@ def get_recent_tasks(limit: int = 20) -> list[dict]:
         return []
 
 
-def _is_claude_process(parts: list[str]) -> bool:
-    """判断是否为 Claude 进程（排除 grep 和 shell wrapper）"""
-    for p in parts:
-        if not p:
-            continue
-        # 二进制名包含 claude
-        basename = os.path.basename(p)
-        if basename == "claude" or basename.startswith("claude "):
-            return True
-        # Cursor 插件中的 claude binary
-        if "claude-code" in p and "native-binary/claude" in " ".join(parts):
-            return True
-    return False
-
-
-def _detect_type(cmdline: str, parts: list[str]) -> str:
-    """检测实例类型"""
-    if "cursor-server" in cmdline or "claude-code-" in cmdline:
-        return "cursor"
-    if "login" in parts:
-        return "cli-login"
-    # 检查是否有 -p 参数（one-shot 模式）
-    for i, p in enumerate(parts):
-        if p == "-p" and i + 1 < len(parts):
-            # 带 --resume 的是 API 调用（来自 web manager 等）
-            if "--resume" in cmdline or "--output-format json" in cmdline:
-                return "cli-api"
-            return "cli-oneshot"
-    return "cli-interactive"
-
-
-def _extract_args(instance: ClaudeInstance, cmdline: str, parts: list[str]):
-    """从命令行参数提取详细信息"""
-    for i, p in enumerate(parts):
-        if p == "--model" and i + 1 < len(parts):
-            instance.model = parts[i + 1]
-        elif p == "--permission-mode" and i + 1 < len(parts):
-            instance.permission_mode = parts[i + 1]
-        elif p == "--resume" and i + 1 < len(parts):
-            instance.session_id = parts[i + 1][:12] + "..."
-        elif p == "-p" and i + 1 < len(parts):
-            instance.prompt = parts[i + 1]
-
-    # 提取版本号（Cursor 插件路径中含版本）
-    ver_match = re.search(r"claude-code-(\d+\.\d+\.\d+)", cmdline)
-    if ver_match:
-        instance.version = ver_match.group(1)
-
-
-def _get_user(pid: int) -> str:
-    """获取进程所属用户"""
-    try:
-        stat_path = f"/proc/{pid}/status"
-        with open(stat_path) as f:
-            for line in f:
-                if line.startswith("Uid:"):
-                    uid = int(line.split()[1])
-                    import pwd
-                    return pwd.getpwuid(uid).pw_name
-    except (PermissionError, FileNotFoundError, KeyError):
-        pass
-    return "?"
-
-
-def _read_proc_stat(pid: int) -> dict:
-    """读取进程 CPU/内存/启动时间"""
-    result = {}
-    try:
-        with open(f"/proc/{pid}/stat") as f:
-            fields = f.read().split()
-        # RSS in pages
-        rss_pages = int(fields[23])
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        result["mem_mb"] = rss_pages * page_size // (1024 * 1024)
-
-        # 启动时间
-        clk_tck = os.sysconf("SC_CLK_TCK")
-        with open("/proc/uptime") as f:
-            system_uptime = float(f.read().split()[0])
-        start_ticks = int(fields[21])
-        start_seconds_ago = system_uptime - (start_ticks / clk_tck)
-        result["uptime"] = _format_duration(start_seconds_ago)
-        result["start_time"] = time.strftime(
-            "%H:%M", time.localtime(time.time() - start_seconds_ago)
-        )
-
-        # CPU（粗略：utime + stime）
-        utime = int(fields[13]) / clk_tck
-        stime = int(fields[14]) / clk_tck
-        total_cpu = utime + stime
-        if start_seconds_ago > 0:
-            result["cpu"] = round(total_cpu / start_seconds_ago * 100, 1)
-
-    except (FileNotFoundError, PermissionError, IndexError, ValueError):
-        pass
-    return result
-
-
-def _format_duration(seconds: float) -> str:
-    """格式化时间长度"""
-    s = int(seconds)
-    if s < 60:
-        return f"{s}s"
-    if s < 3600:
-        return f"{s // 60}m"
-    if s < 86400:
-        return f"{s // 3600}h{(s % 3600) // 60}m"
-    return f"{s // 86400}d{(s % 86400) // 3600}h"
-
-
-def get_session_history(home_dir: str = "") -> list[dict]:
-    """读取 ~/.claude/history.jsonl 获取最近会话历史"""
-    if not home_dir:
-        home_dir = os.path.expanduser("~")
-    history_path = os.path.join(home_dir, ".claude", "history.jsonl")
-    sessions = []
-    try:
-        with open(history_path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    sessions.append(entry)
-                except json.JSONDecodeError:
-                    continue
-    except FileNotFoundError:
-        pass
-    return sessions[-50:]  # 最近 50 条
-
-
 def get_machine_stats() -> dict:
-    """获取机器整体资源"""
+    """机器资源"""
     stats = {}
     try:
         with open("/proc/loadavg") as f:
             parts = f.read().split()
             stats["load_1m"] = parts[0]
-            stats["load_5m"] = parts[1]
     except FileNotFoundError:
         pass
-
     try:
         with open("/proc/meminfo") as f:
             mem = {}
@@ -342,5 +328,56 @@ def get_machine_stats() -> dict:
             stats["mem_percent"] = round((total - avail) / total * 100)
     except (FileNotFoundError, ValueError):
         pass
-
     return stats
+
+
+# ============= 辅助函数 =============
+
+def _get_user(pid: int) -> str:
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("Uid:"):
+                    uid = int(line.split()[1])
+                    import pwd
+                    return pwd.getpwuid(uid).pw_name
+    except (PermissionError, FileNotFoundError, KeyError):
+        pass
+    return "?"
+
+
+def _read_proc_stat(pid: int) -> dict:
+    result = {}
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            fields = f.read().split()
+        rss_pages = int(fields[23])
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        result["mem_mb"] = rss_pages * page_size // (1024 * 1024)
+
+        clk_tck = os.sysconf("SC_CLK_TCK")
+        with open("/proc/uptime") as f:
+            system_uptime = float(f.read().split()[0])
+        start_ticks = int(fields[21])
+        elapsed = system_uptime - (start_ticks / clk_tck)
+        result["uptime"] = _format_duration(elapsed)
+        result["start_time"] = time.strftime("%H:%M", time.localtime(time.time() - elapsed))
+
+        utime = int(fields[13]) / clk_tck
+        stime = int(fields[14]) / clk_tck
+        if elapsed > 0:
+            result["cpu"] = round((utime + stime) / elapsed * 100, 1)
+    except (FileNotFoundError, PermissionError, IndexError, ValueError):
+        pass
+    return result
+
+
+def _format_duration(seconds: float) -> str:
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m"
+    if s < 86400:
+        return f"{s // 3600}h{(s % 3600) // 60}m"
+    return f"{s // 86400}d{(s % 86400) // 3600}h"

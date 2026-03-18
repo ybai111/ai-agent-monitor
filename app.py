@@ -10,7 +10,7 @@ from textual.widgets import Header, Footer, Static, DataTable, Label, Rule, Tabb
 from textual.timer import Timer
 from rich.text import Text
 
-from scanner import scan_instances, get_machine_stats, get_recent_tasks, ClaudeInstance
+from scanner import scan_instances, get_machine_stats, get_recent_tasks, AgentInstance
 
 
 def _status_icon(status: str) -> Text:
@@ -58,11 +58,13 @@ class StatsBar(Static):
     def compose(self) -> ComposeResult:
         yield Label(id="stats-label")
 
-    def update_stats(self, instances: list[ClaudeInstance], machine: dict, tasks: list[dict]):
+    def update_stats(self, instances: list[AgentInstance], machine: dict, tasks: list[dict]):
         label = self.query_one("#stats-label", Label)
         total_mem = sum(i.mem_mb for i in instances)
-        cursor_count = sum(1 for i in instances if i.type == "cursor")
-        cli_count = len(instances) - cursor_count
+        # 按工具分组计数
+        tool_counts = {}
+        for i in instances:
+            tool_counts[i.tool_label] = tool_counts.get(i.tool_label, 0) + 1
         users = len(set(i.user for i in instances))
 
         # 任务统计
@@ -72,7 +74,8 @@ class StatsBar(Static):
 
         parts = []
         parts.append(f"[bold cyan]{len(instances)}[/] 实例")
-        parts.append(f"[dim]([/]{cursor_count} Cursor + {cli_count} CLI[dim])[/]")
+        tool_str = " + ".join(f"{c} {t}" for t, c in sorted(tool_counts.items()))
+        parts.append(f"[dim]([/]{tool_str}[dim])[/]")
         parts.append(f"[dim]|[/] [bold]{users}[/] 用户")
         parts.append(f"[dim]|[/] 内存 [bold]{total_mem}[/]MB")
 
@@ -99,42 +102,52 @@ class InstanceTable(DataTable):
     def on_mount(self):
         self.add_column("", key="icon", width=3)
         self.add_column("用户", key="user")
+        self.add_column("工具", key="tool")
         self.add_column("类型", key="type")
-        self.add_column("模型", key="model")
+        self.add_column("模型/扩展", key="model")
         self.add_column("项目", key="project")
-        self.add_column("当前任务", key="task", width=40)
+        self.add_column("当前任务", key="task", width=36)
         self.add_column("内存", key="mem")
         self.add_column("时长", key="uptime")
         self.add_column("PID", key="pid")
         self.cursor_type = "row"
         self.zebra_stripes = True
 
-    def refresh_data(self, instances: list[ClaudeInstance]):
+    def refresh_data(self, instances: list[AgentInstance]):
         self.clear()
         for inst in instances:
             # 状态图标
-            icon = Text("●", style="bold green") if inst.type != "cli-login" else Text("○", style="dim")
+            icon = Text("●", style="bold green")
+            if inst.sub_type in ("login", "server"):
+                icon = Text("○", style="dim")
+
+            # 工具名（不同工具不同颜色）
+            tool_colors = {
+                "claude-cli": "bold cyan",
+                "cursor": "bold magenta",
+                "antigravity": "bold blue",
+                "windsurf": "bold green",
+                "trae": "bold yellow",
+                "aider": "bold red",
+                "codex": "bold white",
+                "gk-mcp": "dim",
+            }
+            tool_text = Text(inst.tool_label, style=tool_colors.get(inst.tool, ""))
 
             # 类型
-            type_styles = {
-                "cursor": "bold magenta",
-                "cli-api": "bold cyan",
-                "cli-interactive": "bold green",
-                "cli-oneshot": "bold blue",
-                "cli-login": "dim",
-            }
-            type_text = Text(inst.type_label, style=type_styles.get(inst.type, ""))
+            type_text = Text(inst.type_label, style="dim" if inst.sub_type in ("login", "server") else "")
 
-            # 模型
-            model_text = Text(inst.model or "-")
-            if inst.model and "opus" in inst.model.lower():
+            # 模型/扩展
+            display_model = inst.model or inst.extension or "-"
+            model_text = Text(display_model)
+            if "opus" in display_model.lower():
                 model_text.stylize("bold yellow")
-            elif inst.model and "sonnet" in inst.model.lower():
+            elif "sonnet" in display_model.lower():
                 model_text.stylize("cyan")
 
-            # 任务描述（优先用 prompt，其次 session_id）
+            # 任务描述
             task_desc = inst.prompt_short or inst.session_id or "-"
-            task_text = Text(task_desc, style="italic" if inst.type == "cli-api" else "")
+            task_text = Text(task_desc, style="italic" if inst.sub_type == "api" else "")
 
             # 内存
             mem_text = Text(f"{inst.mem_mb}M")
@@ -144,7 +157,7 @@ class InstanceTable(DataTable):
                 mem_text.stylize("yellow")
 
             self.add_row(
-                icon, inst.user, type_text, model_text,
+                icon, inst.user, tool_text, type_text, model_text,
                 Text(inst.project_name), task_text,
                 mem_text, inst.uptime or "-", str(inst.pid),
             )
@@ -247,8 +260,8 @@ class ClaudeMonitor(App):
         ("tab", "focus_next", "切换面板"),
     ]
 
-    TITLE = "Claude Monitor"
-    SUB_TITLE = "实例 + 任务追踪"
+    TITLE = "AI Agent Monitor"
+    SUB_TITLE = "Claude · Cursor · Antigravity · Windsurf · Trae · Aider"
 
     def compose(self) -> ComposeResult:
         yield Header()

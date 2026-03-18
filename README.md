@@ -1,47 +1,64 @@
-# Claude Monitor
+# AI Agent Monitor
 
-A terminal dashboard for monitoring all active Claude Code instances on your machine.
+Terminal dashboard for monitoring all active AI coding agents on your machine.
 
-Detects Claude CLI sessions, Cursor plugin instances, and API-driven tasks in real time. Shows who's running what, resource usage, task status, and session history.
+Detects **Claude CLI, Cursor, Antigravity, Windsurf, Trae, Aider, Copilot, Codex** and more — showing who's running what, resource usage, and task status in real time.
 
 ## Screenshot
 
 ```
-┌─ Claude Monitor ──────────────────────────────────────────────┐
-│ 6 instances (2 Cursor + 4 CLI) | 3 users | RAM 1.8GB | Load 4.5 │
-├─ Active Instances ────────────────────────────────────────────┤
-│   USER        TYPE    MODEL  PROJECT              TASK        │
-│ ● baiyuhu     Cursor  opus   work_detection/      -           │
-│ ● baiyuhu     API     -      claude_web_manager/  生成封面... │
-│ ● sunyifan    CLI     -      my-project/          (interactive)│
-│ ● zhouyinhong Cursor  opus   nature-chat/         -           │
-├─ Task History ────────────────────────────────────────────────┤
+┌─ AI Agent Monitor ── Claude · Cursor · Antigravity · Windsurf ─┐
+│ 7 instances (3 Claude + 2 Cursor + 1 Codex + 1 GK MCP)        │
+├─ Active Instances ─────────────────────────────────────────────┤
+│   USER        TOOL    TYPE  MODEL       PROJECT        MEM     │
+│ ● baiyuhu     Cursor  扩展  opus        work_detection 328M    │
+│ ● baiyuhu     Cursor  服务  [codex]     baiyuhu         47M    │
+│ ● baiyuhu     Claude  API   -           claude_web_mgr 370M    │
+│ ● sunyifan    Claude  交互  -           my-project     481M    │
+│ ● zhouyinhong Cursor  扩展  opus        nature-chat    317M    │
+│ ● luoyudong   AG      服务  -           -                -     │
+├─ Task History ─────────────────────────────────────────────────┤
 │ ✓ completed  给AI装技能包...           3m20s  03-17 07:08     │
-│ ✓ completed  今日GitHub热榜精选        1m10s  03-17 06:55     │
 │ ✗ failed     weekly --publish          0m5s   03-17 06:30     │
-└───────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────┘
 ```
+
+## Supported Tools
+
+| Tool | Detection Method | Info Extracted |
+|------|------------------|----------------|
+| **Claude CLI** | Binary name `claude` in `/proc` | Model, prompt, session, permissions, CWD |
+| **Cursor** | `.cursor-server` in process path | Extensions (Claude Code, Codex, Copilot), version |
+| **Antigravity** | `.antigravity-server` in process path | Extensions, version |
+| **Windsurf** | `.windsurf-server` in process path | Extensions, version |
+| **Trae** | `.trae-server` in process path | Extensions, version |
+| **Aider** | Binary name `aider` | Model, CWD |
+| **Copilot** | `github.copilot` extension | Version |
+| **Codex** | `openai.chatgpt` extension | Server status |
+| **Cline / Roo Code** | Extension prefix match | Version |
+| **GitKraken MCP** | `gk mcp` in cmdline | Host IDE |
 
 ## Features
 
-- **Instance detection** — Scans `/proc` to find all Claude processes (CLI, Cursor plugin, API calls)
-- **Rich info extraction** — User, model (opus/sonnet), project directory, current prompt, permission mode, memory usage, uptime
-- **Task history** — Shows completed/failed/running tasks with duration (requires external task database)
+- **Multi-tool detection** — Scans `/proc` for all AI coding processes across all users
+- **IDE extension awareness** — Detects AI extensions inside Cursor, Antigravity, Windsurf, Trae
+- **Task tracking** — Shows current prompt/task for CLI instances
+- **Resource monitoring** — Memory, CPU, uptime per instance
+- **Task history** — Completed/failed/running tasks with duration (optional, needs task DB)
 - **Auto refresh** — Updates every 3 seconds
-- **Process management** — Kill a selected instance with `k`
-- **Multi-user** — Sees all users' Claude instances on shared machines
+- **Process management** — Kill selected instance with `k`
+- **Multi-user** — Works on shared development servers
 
 ## Requirements
 
 - **Linux** (reads `/proc` filesystem)
 - Python 3.10+
-- `textual` and `rich` packages
 
 ## Install
 
 ```bash
-git clone https://github.com/baiyuhu/claude-monitor.git
-cd claude-monitor
+git clone https://github.com/yourusername/ai-agent-monitor.git
+cd ai-agent-monitor
 pip install -r requirements.txt
 ```
 
@@ -63,34 +80,31 @@ python app.py
 
 ### Task History (Optional)
 
-Claude Monitor can display task history from an external SQLite database. Set the path via environment variable:
+Set `CLAUDE_MONITOR_TASK_DB` to a SQLite database path to show task history:
 
 ```bash
 export CLAUDE_MONITOR_TASK_DB=/path/to/tasks.db
 python app.py
 ```
 
-The database should have a `tasks` table with columns: `id`, `prompt`, `status`, `output`, `created_at`, `started_at`, `finished_at`.
-
-This is compatible with [claude_web_manager](https://github.com/baiyuhu/claude-web-manager) out of the box.
-
-## What It Detects
-
-| Instance Type | How It's Detected | Info Available |
-|---------------|-------------------|----------------|
-| **Cursor Plugin** | Binary path contains `claude-code-` | Model, version, permission mode, CWD |
-| **CLI Interactive** | `claude` process without `-p` flag | CWD, uptime |
-| **CLI One-shot** | `claude -p "prompt"` | Full prompt text, CWD |
-| **CLI API** | `claude -p ... --output-format json` | Prompt, session ID, task status |
-| **CLI Login** | `claude login` | - |
+The DB should have a `tasks` table with: `id`, `prompt`, `status`, `output`, `created_at`, `started_at`, `finished_at`.
 
 ## How It Works
 
-1. Iterates `/proc/*/cmdline` to find processes with `claude` binary
-2. Parses command-line arguments to extract model, prompt, session, permissions
-3. Reads `/proc/*/stat` for CPU/memory/uptime
-4. Optionally queries a SQLite task database for completion status
-5. Renders everything in a Textual TUI with auto-refresh
+1. Scans `/proc/*/cmdline` for AI tool processes
+2. Classifies by tool (Claude/Cursor/AG/...) and type (CLI/extension/server/MCP)
+3. Extracts model, prompt, permissions from command-line arguments
+4. Reads `/proc/*/stat` for CPU/memory/uptime
+5. Optionally queries a task database for completion status
+6. Renders in a Textual TUI with auto-refresh
+
+## Adding New Tools
+
+Edit `scanner.py`:
+
+1. Add IDE server directory to `_IDE_SIGNATURES` (e.g. `".my-ide-server": "my-ide"`)
+2. Add extension prefix to `_EXTENSION_SIGNATURES` (e.g. `"vendor.ai-ext": "my-ai"`)
+3. Or add CLI detection in `_classify_process()`
 
 ## License
 
